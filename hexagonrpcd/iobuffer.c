@@ -143,7 +143,7 @@ struct fastrpc_decoder_context *inbuf_decode_start(uint32_t sc)
 	ctx->buf_off = 0;
 	ctx->align = 0;
 
-	ctx->inbufs = malloc(sizeof(*ctx->inbufs) * ctx->n_inbufs);
+	ctx->inbufs = calloc(ctx->n_inbufs, sizeof(*ctx->inbufs));
 	if (ctx->inbufs == NULL && ctx->n_inbufs != 0)
 		goto err;
 
@@ -166,6 +166,12 @@ struct fastrpc_io_buffer *inbuf_decode_finish(struct fastrpc_decoder_context *ct
 int inbuf_decode_is_complete(struct fastrpc_decoder_context *ctx)
 {
 	return ctx->idx >= ctx->n_inbufs;
+}
+
+void inbuf_decode_abort(struct fastrpc_decoder_context *ctx)
+{
+	iobuf_free(ctx->n_inbufs, ctx->inbufs);
+	free(ctx);
 }
 
 int inbuf_decode(struct fastrpc_decoder_context *ctx, size_t len, const void *src)
@@ -199,9 +205,12 @@ size_t outbufs_calculate_size(size_t n_outbufs, const struct fastrpc_io_buffer *
 	for (i = 0; i < n_outbufs; i++) {
 		size += 4;
 
-		if (size & 0x7)
-			size += 8 - (size & 0x7);
-		size += outbufs[i].s;
+		/* Match outbufs_encode: empty error replies have only a size word. */
+		if (outbufs[i].s) {
+			if (size & 0x7)
+				size += 8 - (size & 0x7);
+			size += outbufs[i].s;
+		}
 	}
 
 	return size;

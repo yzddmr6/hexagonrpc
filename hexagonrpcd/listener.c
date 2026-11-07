@@ -462,6 +462,12 @@ static int fetch_large_inbufs(int fd, uint32_t rctx, uint32_t inbufs_len,
 		return -1;
 	}
 
+	/* Qualcomm's listener checks the required length against total capacity. */
+	if (got > inbufs_len) {
+		fprintf(stderr, "Large input requirement changed: %u > %u\n", got, inbufs_len);
+		free(buf);
+		return -1;
+	}
 	*out = buf;
 
 	return 0;
@@ -529,17 +535,20 @@ static int return_for_next_invoke(int fd,
 	ret = inbuf_decode(ctx, inbufs_len, src);
 	if (ret) {
 		perror("Could not decode");
-		goto err_free_large;
+		goto err_abort_decode;
 	}
 
 	if (!inbuf_decode_is_complete(ctx)) {
 		fprintf(stderr, "Expected more input buffers\n");
 		ret = -1;
-		goto err_free_large;
+		goto err_abort_decode;
 	}
 
 	*decoded = inbuf_decode_finish(ctx);
+	goto err_free_large;
 
+err_abort_decode:
+	inbuf_decode_abort(ctx);
 err_free_large:
 	free(large);
 err_free_outbufs:
@@ -664,8 +673,11 @@ int run_fastrpc_listener(int fd,
 		if (ret)
 			break;
 
-		if (returned != NULL)
+		if (returned != NULL) {
 			iobuf_free(n_outbufs, returned);
+			returned = NULL;
+		}
+		n_outbufs = REMOTE_SCALARS_OUTBUFS(sc);
 
 		ret = invoke_requested_procedure(n_ifaces, ifaces,
 						 handle, sc, &result,
@@ -673,11 +685,15 @@ int run_fastrpc_listener(int fd,
 		if (ret)
 			break;
 
-		if (decoded != NULL)
+		if (decoded != NULL) {
 			iobuf_free(REMOTE_SCALARS_INBUFS(sc), decoded);
-
-		n_outbufs = REMOTE_SCALARS_OUTBUFS(sc);
+			decoded = NULL;
+		}
 	}
 
+	if (decoded != NULL)
+		iobuf_free(REMOTE_SCALARS_INBUFS(sc), decoded);
+	if (returned != NULL)
+		iobuf_free(n_outbufs, returned);
 	return ret;
 }

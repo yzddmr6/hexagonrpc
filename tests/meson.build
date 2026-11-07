@@ -48,6 +48,28 @@ test_registry_io = executable('test_registry_io',
 )
 test('registry-io', test_registry_io)
 
+test_listener_large = executable('test_listener_large',
+  'test_listener_large.c',
+  '../hexagonrpcd/apps_std.c',
+  '../hexagonrpcd/interface/apps_std.c',
+  '../hexagonrpcd/interface/adsp_listener.c',
+  '../hexagonrpcd/listener.c',
+  '../hexagonrpcd/iobuffer.c',
+  '../hexagonrpcd/hexagonfs.c',
+  '../hexagonrpcd/hexagonfs_mapped.c',
+  '../hexagonrpcd/hexagonfs_virt_dir.c',
+  '../hexagonrpcd/rpcd_builder.c',
+  '../libhexagonrpc/hexagonrpc.c',
+  c_args : cflags,
+  include_directories : include,
+)
+foreach size : ['232', '233', '4096', '65536']
+  test('listener-write-' + size, test_listener_large, args : [size, 'success'])
+endforeach
+foreach scenario : ['fetch-error', 'changed-length', 'oversize', 'truncated', 'unsupported']
+  test('listener-' + scenario, test_listener_large, args : ['4096', scenario])
+endforeach
+
 # Substitute allocation and ioctl calls to exercise errors without a device.
 test_type_sequence = executable('test_type_sequence',
   'test_type_sequence.c',
