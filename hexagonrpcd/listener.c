@@ -431,7 +431,12 @@ static int return_for_next_invoke(int fd,
 	uint32_t outbufs_len;
 	int ret;
 
-	outbufs_len = outbufs_calculate_size(REMOTE_SCALARS_OUTBUFS(*sc), returned);
+	/* A refused request is answered with its error and no output buffers. */
+	if (returned != NULL)
+		outbufs_len = outbufs_calculate_size(REMOTE_SCALARS_OUTBUFS(*sc),
+						     returned);
+	else
+		outbufs_len = 0;
 
 	if (outbufs_len) {
 		outbufs = malloc(outbufs_len);
@@ -595,12 +600,23 @@ int run_fastrpc_listener(int fd,
 
 		if (returned != NULL)
 			iobuf_free(n_outbufs, returned);
+		returned = NULL;
 
+		/*
+		 * A request that no handler accepts (unknown handle or method,
+		 * wrong scalars or sizes) only fails that request: reply with
+		 * the error code and no output buffers, like the reference
+		 * listener does, and keep serving. Leaving would strand every
+		 * later file request of the remote process.
+		 */
 		ret = fastrpc_invoke_requested_procedure(n_ifaces, ifaces,
 							 handle, sc, &result,
 							 decoded, &returned);
-		if (ret)
-			break;
+		if (ret) {
+			fprintf(stderr, "Refused request on handle %u (%08x) with %u\n",
+					handle, sc, result);
+			ret = 0;
+		}
 
 		if (decoded != NULL)
 			iobuf_free(REMOTE_SCALARS_INBUFS(sc), decoded);
