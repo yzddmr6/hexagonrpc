@@ -190,9 +190,7 @@ struct hexagonfs_dirent *construct_root_dir(const char *prefix, const char *dsp,
 		registry->ops = &hexagonfs_registry_ops;
 	persist_dir = hfs_mkdir("persist", 1,
 				hfs_mkdir("sensors", 1,
-					hfs_mkdir("registry", 1,
-						registry
-					)
+					registry
 				)
 		      );
 

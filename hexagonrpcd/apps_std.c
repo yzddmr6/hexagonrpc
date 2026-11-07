@@ -237,8 +237,9 @@ static uint32_t apps_std_fopen_with_env(void *data,
 
 	fd = hexagonfs_openat_flags(ctx->fds, ctx->rootfd, dirfd, inbufs[3].p, flags);
 	if (fd < 0) {
-		fprintf(stderr, "Could not open %s: %s\n",
+		fprintf(stderr, "Could not open %s (mode=%s, flags=0x%x): %s\n",
 				(const char *) inbufs[3].p,
+				rw_mode, flags,
 				strerror(-fd));
 		return AEE_EFAILED;
 	}

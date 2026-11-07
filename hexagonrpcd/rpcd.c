@@ -78,7 +78,7 @@ static void print_usage(const char *argv0)
 	       "\t-p PROGRAM\tRun client program with shared file descriptor\n"
 	       "\t-R DIR\t\tRoot directory of served files (default: /usr/share/qcom/)\n"
 	       "\t-s\t\tAttach to sensorspd\n"
-	       "\t-w DIR\t\tExplicit writable registry copy (default: read-only)\n");
+	       "\t-w DIR\t\tWritable registry parent copy, containing registry/ (default: read-only)\n");
 }
 
 static int create_shell_pd(int fd, const char *create_shell)
