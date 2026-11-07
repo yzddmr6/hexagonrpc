@@ -24,6 +24,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
@@ -191,6 +192,45 @@ static int mapped_removeat(struct hexagonfs_fd *dir, const char *name)
 	if (!S_ISREG(st.st_mode) || st.st_nlink != 1)
 		return -EPERM;
 	return unlinkat(ctx->fd, name, 0) < 0 ? -errno : 0;
+}
+
+/*
+ * frename within the writable registry copy: rename(2) semantics, so an existing
+ * target is replaced atomically. Source and an existing target must be regular
+ * files with one link; links are never followed. The source data and both
+ * directories are synced, so a completed rename survives a power loss.
+ */
+static int mapped_renameat(struct hexagonfs_fd *olddir, const char *oldname,
+			   struct hexagonfs_fd *newdir, const char *newname)
+{
+	struct mapped_ctx *from = olddir->data, *to = newdir->data;
+	struct stat st;
+	int fd, ret = 0;
+	if (!from || !to || !from->writable || !to->writable)
+		return -EROFS;
+	fd = openat(from->fd, oldname, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+	if (fd < 0)
+		return -errno;
+	if (fstat(fd, &st) < 0)
+		ret = -errno;
+	else if (!S_ISREG(st.st_mode) || st.st_nlink != 1)
+		ret = -EPERM;
+	else if (fsync(fd) < 0)
+		ret = -errno;
+	close(fd);
+	if (ret)
+		return ret;
+	if (fstatat(to->fd, newname, &st, AT_SYMLINK_NOFOLLOW) == 0) {
+		if (!S_ISREG(st.st_mode) || st.st_nlink != 1)
+			return -EPERM;
+	} else if (errno != ENOENT) {
+		return -errno;
+	}
+	if (renameat(from->fd, oldname, to->fd, newname) < 0)
+		return -errno;
+	if (fsync(to->fd) < 0 || (from->fd != to->fd && fsync(from->fd) < 0))
+		return -errno;
+	return 0;
 }
 
 static ssize_t mapped_read(struct hexagonfs_fd *fd, size_t size, void *out)
@@ -402,6 +442,7 @@ struct hexagonfs_file_ops hexagonfs_mapped_ops = {
 	.stat = mapped_stat,
 	.write = mapped_write,
 	.removeat = mapped_removeat,
+	.renameat = mapped_renameat,
 };
 
 struct hexagonfs_file_ops hexagonfs_registry_ops = {
@@ -414,6 +455,7 @@ struct hexagonfs_file_ops hexagonfs_registry_ops = {
 	.stat = mapped_stat,
 	.write = mapped_write,
 	.removeat = mapped_removeat,
+	.renameat = mapped_renameat,
 };
 
 struct hexagonfs_file_ops hexagonfs_mapped_or_empty_ops = {

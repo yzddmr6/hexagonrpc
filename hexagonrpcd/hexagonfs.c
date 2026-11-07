@@ -220,6 +220,38 @@ ssize_t hexagonfs_write(struct hexagonfs_fd **fds, int fileno, size_t size, cons
 	return fds[fileno]->ops->write(fds[fileno], size, ptr);
 }
 
+/*
+ * Resolve the directory holding the last segment of PATH with the normal
+ * mapping rules (absolute from the root, otherwise from DIRFD; ".." stays in
+ * the virtual tree). PATH is split in place and *LEAF points to the segment.
+ */
+static int open_parent(struct hexagonfs_fd **fds, int rootfd, int dirfd, char *path, char **leaf)
+{
+	*leaf = strrchr(path, '/');
+	if (!*leaf) {
+		*leaf = path;
+		return dirfd;
+	}
+	*(*leaf)++ = '\0';
+	return hexagonfs_openat(fds, rootfd, dirfd, *path ? path : "/");
+}
+
+static void close_parent(struct hexagonfs_fd **fds, int rootfd, int dirfd,
+			 const char *path, const char *leaf, int parent)
+{
+	if (leaf != path && parent >= 0 && parent != dirfd && parent != rootfd)
+		hexagonfs_close(fds, parent);
+}
+
+static int check_parent(struct hexagonfs_fd **fds, const char *leaf, int parent)
+{
+	if (!*leaf || !strcmp(leaf, ".") || !strcmp(leaf, ".."))
+		return -EINVAL;
+	if (parent < 0 || parent >= HEXAGONFS_MAX_FD || !fds[parent])
+		return parent < 0 ? parent : -EBADF;
+	return 0;
+}
+
 int hexagonfs_removeat(struct hexagonfs_fd **fds, int rootfd, int dirfd, const char *name)
 {
 	char *path = strdup(name), *leaf;
@@ -227,25 +259,50 @@ int hexagonfs_removeat(struct hexagonfs_fd **fds, int rootfd, int dirfd, const c
 	struct hexagonfs_fd *dir;
 	if (!path)
 		return -ENOMEM;
-	leaf = strrchr(path, '/');
-	if (leaf) {
-		*leaf++ = '\0';
-		parent = hexagonfs_openat(fds, rootfd, dirfd, *path ? path : "/");
-	} else {
-		leaf = path;
-		parent = dirfd;
-	}
-	if (!*leaf || !strcmp(leaf, ".") || !strcmp(leaf, ".."))
-		ret = -EINVAL;
-	else if (parent < 0 || parent >= HEXAGONFS_MAX_FD || !fds[parent])
-		ret = parent < 0 ? parent : -EBADF;
-	else {
+	parent = open_parent(fds, rootfd, dirfd, path, &leaf);
+	ret = check_parent(fds, leaf, parent);
+	if (!ret) {
 		dir = fds[parent];
 		ret = dir->ops->removeat ? dir->ops->removeat(dir, leaf) : -EROFS;
 	}
-	if (leaf != path && parent >= 0 && parent != dirfd && parent != rootfd)
-		hexagonfs_close(fds, parent);
+	close_parent(fds, rootfd, dirfd, path, leaf, parent);
 	free(path);
+	return ret;
+}
+
+/*
+ * Both names are resolved like removeat. Only directories whose ops share one
+ * renameat implementation (the explicitly writable registry copy) can take part;
+ * every other mapping, including what ".." escapes reach, is read-only.
+ */
+int hexagonfs_renameat(struct hexagonfs_fd **fds, int rootfd, int dirfd,
+		       const char *oldname, const char *newname)
+{
+	char *oldpath = strdup(oldname), *newpath = strdup(newname), *oldleaf, *newleaf;
+	int oldparent, newparent, ret;
+	struct hexagonfs_fd *olddir, *newdir;
+	if (!oldpath || !newpath) {
+		free(oldpath);
+		free(newpath);
+		return -ENOMEM;
+	}
+	oldparent = open_parent(fds, rootfd, dirfd, oldpath, &oldleaf);
+	newparent = open_parent(fds, rootfd, dirfd, newpath, &newleaf);
+	ret = check_parent(fds, oldleaf, oldparent);
+	if (!ret)
+		ret = check_parent(fds, newleaf, newparent);
+	if (!ret) {
+		olddir = fds[oldparent];
+		newdir = fds[newparent];
+		if (!olddir->ops->renameat || olddir->ops->renameat != newdir->ops->renameat)
+			ret = -EROFS;
+		else
+			ret = olddir->ops->renameat(olddir, oldleaf, newdir, newleaf);
+	}
+	close_parent(fds, rootfd, dirfd, newpath, newleaf, newparent);
+	close_parent(fds, rootfd, dirfd, oldpath, oldleaf, oldparent);
+	free(newpath);
+	free(oldpath);
 	return ret;
 }
 

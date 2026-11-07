@@ -30,6 +30,7 @@ extern struct hrpc_method_def_interp4 apps_std_fclose_def;
 extern struct hrpc_method_def_interp4 apps_std_fread_def;
 extern struct hrpc_method_def_interp4 apps_std_fwrite_def;
 extern struct hrpc_method_def_interp4 apps_std_fremove_def;
+extern struct hrpc_method_def_interp4 apps_std_frename_def;
 extern struct hrpc_method_def_interp4 apps_std_fseek_def;
 extern struct hrpc_method_def_interp4 apps_std_fopen_with_env_def;
 extern struct hrpc_method_def_interp4 apps_std_opendir_def;

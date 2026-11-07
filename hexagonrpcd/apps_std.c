@@ -272,6 +272,27 @@ static uint32_t apps_std_fremove(void *data,
 	return ret < 0 ? AEE_EFAILED : AEE_SUCCESS;
 }
 
+static uint32_t apps_std_frename(void *data,
+				const struct fastrpc_io_buffer *inbufs,
+				struct fastrpc_io_buffer *outbufs)
+{
+	struct apps_std_ctx *ctx = data;
+	const char *oldname = inbufs[1].p, *newname = inbufs[2].p;
+	int ret;
+	(void)outbufs;
+	if (!inbufs[1].s || oldname[inbufs[1].s - 1] || !inbufs[2].s || newname[inbufs[2].s - 1])
+		return AEE_EBADPARM;
+	ret = hexagonfs_renameat(ctx->fds, ctx->rootfd, ctx->adsp_library_dirfd, oldname, newname);
+#ifdef HEXAGONRPC_VERBOSE
+	printf("rename(%s, %s) -> %d\n", oldname, newname, ret);
+#endif
+	if (ret < 0) {
+		fprintf(stderr, "Could not rename %s to %s: %s\n", oldname, newname, strerror(-ret));
+		return AEE_EFAILED;
+	}
+	return AEE_SUCCESS;
+}
+
 static uint32_t apps_std_opendir(void *data,
 				 const struct fastrpc_io_buffer *inbufs,
 				 struct fastrpc_io_buffer *outbufs)
@@ -529,10 +550,12 @@ static const struct fastrpc_function_impl apps_std_procs[] = {
 		.def = &apps_std_stat_def,
 		.impl = apps_std_stat,
 	},
+	{ .def = NULL, .impl = NULL, },
+	{ .def = &apps_std_frename_def, .impl = apps_std_frename, },
 };
 
 const struct fastrpc_interface apps_std_interface = {
 	.name = "apps_std",
-	.n_procs = 32,
+	.n_procs = 34,
 	.procs = apps_std_procs,
 };

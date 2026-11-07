@@ -99,6 +99,18 @@ const struct hrpc_method_def_interp4 apps_std_fremove_def = {
 	.args = apps_std_fremove_args,
 };
 
+/* Standard apps_std method 33: frename(oldname, newname), extended method ID. */
+static struct hrpc_arg_def_interp4 apps_std_frename_args[] = {
+	{ HRPC_ARG_BLOB_SEQ, sizeof(char) },
+	{ HRPC_ARG_BLOB_SEQ, sizeof(char) },
+};
+
+const struct hrpc_method_def_interp4 apps_std_frename_def = {
+	.msg_id = 33,
+	.n_args = HRPC_ARRAY_SIZE(apps_std_frename_args),
+	.args = apps_std_frename_args,
+};
+
 static struct hrpc_arg_def_interp4 apps_std_fseek_args[] = {
 	{ HRPC_ARG_WORD, sizeof(uint32_t) },
 	{ HRPC_ARG_WORD, sizeof(uint32_t) },

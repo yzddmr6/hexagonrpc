@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Exercise real apps_std handlers and HexagonFS; no FastRPC ioctl or DSP. */
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -80,6 +81,33 @@ static uint32_t rpc_remove(struct fastrpc_interface *iface, const char *name)
 	uint32_t len = strlen(name) + 1;
 	struct fastrpc_io_buffer in[] = { { sizeof(len), &len }, { len, (void *)name } };
 	return invoke(iface, 24, in, NULL);
+}
+
+/* apps_std method 33 through its extended-ID primary buffer, as the DSP sends it. */
+static uint32_t rpc_rename(struct fastrpc_interface *iface, const char *from, const char *to)
+{
+	uint32_t words[] = { 33, strlen(from) + 1, strlen(to) + 1 };
+	struct fastrpc_io_buffer in[] = {
+		{ sizeof(words), words }, { words[1], (void *)from }, { words[2], (void *)to },
+	};
+	return invoke(iface, 33, in, NULL);
+}
+
+static void rpc_store(struct fastrpc_interface *iface, const char *path, const char *data, size_t size)
+{
+	uint32_t written;
+	int fd = rpc_open(iface, path, "w"); CHECK(fd >= 0);
+	CHECK(!rpc_write(iface, fd, data, size, size, &written) && written == size);
+	rpc_close(iface, fd);
+}
+
+static bool host_exists(const char *dir, const char *name)
+{
+	char *path = join(dir, name);
+	struct stat st;
+	bool found = !lstat(path, &st);
+	free(path);
+	return found;
 }
 
 /* Independent POSIX bytes vs bytes served over the actual apps_std handlers. */
@@ -164,6 +192,169 @@ static void mutations(struct fastrpc_interface *iface, const char *root, const c
 	CHECK(rpc_remove(iface, REG "DIR") != 0); /* No fake success for a missing file. */
 }
 
+/* frename in the writable parent SCRATCH (holding registry/); ROOT is outside it. */
+static void renames(struct fastrpc_interface *iface, const char *root, const char *scratch)
+{
+	char *a, *b, *inner = join(scratch, "registry");
+	uint32_t bad[] = { 33, 4, 4 };
+	char unterminated[4] = { 'a', 'b', 'c', 'd' };
+	struct fastrpc_io_buffer in[] = { { sizeof(bad), bad }, { 4, unterminated }, { 4, unterminated } };
+	int fd;
+	/* The DSP's sequence: write the temporary file, then rename it into place. */
+	rpc_store(iface, REG_PARENT "fstempfile", "group-a", 7);
+	CHECK(rpc_rename(iface, REG_PARENT "fstempfile", REG "group") == AEE_SUCCESS);
+	compare_text(inner, "group", "group-a");
+	CHECK(!host_exists(scratch, "fstempfile"));
+	a = join(inner, "group"); compare_file(iface, REG "group", a); free(a);
+	/* An existing target is replaced; an open reader keeps the old bytes. */
+	fd = rpc_open(iface, REG "group", "r"); CHECK(fd >= 0);
+	rpc_store(iface, REG_PARENT "fstempfile", "group-b", 7);
+	CHECK(rpc_rename(iface, REG_PARENT "fstempfile", REG "group") == AEE_SUCCESS);
+	compare_text(inner, "group", "group-b");
+	{
+		uint32_t words[] = { (uint32_t)fd, 64 }, result[2];
+		char old[64];
+		struct fastrpc_io_buffer rin[] = { { sizeof(words), words } };
+		struct fastrpc_io_buffer rout[] = { { sizeof(result), result }, { sizeof(old), old } };
+		CHECK(invoke(iface, 4, rin, rout) == 0 && result[0] == 7 && !memcmp(old, "group-a", 7));
+	}
+	rpc_close(iface, fd);
+	/* Other spellings that resolve inside the copy, across its two levels. */
+	rpc_store(iface, REG "../fstempfile", "group-c", 7);
+	CHECK(rpc_rename(iface, REG "../fstempfile", REG "./../registry/group2") == AEE_SUCCESS);
+	compare_text(inner, "group2", "group-c");
+	CHECK(rpc_rename(iface, REG "group2", REG_PARENT "parsed_file_list.csv") == AEE_SUCCESS);
+	compare_text(scratch, "parsed_file_list.csv", "group-c");
+	CHECK(rpc_rename(iface, "/persist/sensors/registry/parsed_file_list.csv", REG "group2") == AEE_SUCCESS);
+	compare_text(inner, "group2", "group-c");
+	/* No fake success: a missing source fails and creates nothing. */
+	CHECK(rpc_rename(iface, REG_PARENT "fstempfile", REG "missing") == AEE_EFAILED);
+	CHECK(!host_exists(inner, "missing"));
+	/* Escapes out of the writable copy, with ".." or absolute paths. */
+	CHECK(rpc_rename(iface, REG "group", REG_PARENT "../escaped") == AEE_EFAILED);
+	CHECK(rpc_rename(iface, REG "group", REG "../../escaped") == AEE_EFAILED);
+	CHECK(rpc_rename(iface, REG "group", REG "../../../../../../../escaped") == AEE_EFAILED);
+	CHECK(rpc_rename(iface, REG "group", "/odm/etc/sensors/config/json.lst") == AEE_EFAILED);
+	CHECK(rpc_rename(iface, REG "group", "/vendor/etc/sensors/config/piano.json") == AEE_EFAILED);
+	CHECK(rpc_rename(iface, "/odm/etc/sensors/config/json.lst", REG "stolen") == AEE_EFAILED);
+	CHECK(rpc_rename(iface, REG_PARENT "../registry", REG "stolen") == AEE_EFAILED);
+	CHECK(rpc_rename(iface, "group", "group3") == AEE_EFAILED); /* relative: ADSP library dir */
+	CHECK(rpc_rename(iface, REG "group", REG "..") == AEE_EFAILED);
+	CHECK(rpc_rename(iface, REG "group", REG ".") == AEE_EFAILED);
+	CHECK(rpc_rename(iface, REG "group", REG) == AEE_EFAILED); /* empty leaf */
+	CHECK(rpc_rename(iface, REG "..", REG "group3") == AEE_EFAILED);
+	CHECK(rpc_rename(iface, "/", REG "group3") == AEE_EFAILED);
+	compare_text(inner, "group", "group-b");
+	CHECK(!host_exists(root, "escaped") && !host_exists(root, "sensors/escaped"));
+	compare_text(root, "sensors/odm/config/json.lst", "piano.json\n");
+	/* Links and directories are never moved or replaced. */
+	host_write(root, "rename-outside", "original");
+	a = join(root, "rename-outside");
+	b = join(inner, "rsymlink"); CHECK(!symlink(a, b)); free(b);
+	b = join(inner, "rhardlink"); CHECK(!link(a, b)); free(b);
+	b = join(inner, "rdirlink"); CHECK(!symlink(root, b)); free(b);
+	free(a);
+	CHECK(rpc_rename(iface, REG "rsymlink", REG "moved") == AEE_EFAILED);
+	CHECK(rpc_rename(iface, REG "rhardlink", REG "moved") == AEE_EFAILED);
+	CHECK(rpc_rename(iface, REG "group", REG "rsymlink") == AEE_EFAILED);
+	CHECK(rpc_rename(iface, REG "group", REG "rhardlink") == AEE_EFAILED);
+	CHECK(rpc_rename(iface, REG "group", REG "rdirlink/rename-outside") == AEE_EFAILED);
+	CHECK(rpc_rename(iface, REG "rdirlink/rename-outside", REG "moved") == AEE_EFAILED);
+	CHECK(rpc_rename(iface, REG_PARENT "registry", REG_PARENT "moved") == AEE_EFAILED);
+	CHECK(rpc_rename(iface, REG "group", REG_PARENT "registry") == AEE_EFAILED);
+	CHECK(!host_exists(inner, "moved") && !host_exists(scratch, "moved"));
+	compare_text(root, "rename-outside", "original");
+	compare_text(inner, "group", "group-b");
+	b = join(inner, "rsymlink"); { struct stat st; CHECK(!lstat(b, &st) && S_ISLNK(st.st_mode)); } free(b);
+	/* Names must be NUL-terminated inside their buffers. */
+	CHECK(invoke(iface, 33, in, NULL) == AEE_EBADPARM);
+	for (const char *const *n = (const char *const[]){ "rsymlink", "rhardlink", "rdirlink", "group", "group2", NULL }; *n; n++) {
+		a = join(inner, *n); CHECK(!unlink(a)); free(a);
+	}
+	a = join(root, "rename-outside"); CHECK(!unlink(a)); free(a);
+	a = join(scratch, "parsed_file_list.csv"); unlink(a); free(a);
+	free(inner);
+}
+
+static int skip_dots(const struct dirent *entry)
+{
+	return strcmp(entry->d_name, ".") && strcmp(entry->d_name, "..");
+}
+
+static void slurp(const char *dir, const char *name, char **data, size_t *size)
+{
+	char *path = join(dir, name);
+	struct stat st;
+	int fd = open(path, O_RDONLY | O_NOFOLLOW);
+	CHECK(fd >= 0 && !fstat(fd, &st) && S_ISREG(st.st_mode));
+	*size = st.st_size;
+	*data = malloc(*size + 1); CHECK(*data);
+	CHECK(read(fd, *data, *size) == (ssize_t)*size);
+	close(fd); free(path);
+}
+
+/*
+ * Replay the stock persist registry STOCK (outer directory with registry/,
+ * sns_reg_version and parsed_file_list.csv) as the DSP stores it: each registry
+ * group and the parsed-file list through fstempfile + frename, the version file
+ * by a direct write. The rename targets were not logged on piano; the stock tree
+ * and the absence of fstempfile in it define the expected end state.
+ */
+static size_t replay_stock_registry(struct fastrpc_interface *iface, const char *scratch, const char *stock)
+{
+	struct dirent **entries;
+	char *inner = join(stock, "registry"), *scratch_inner = join(scratch, "registry"), *data;
+	size_t size, renames = 0;
+	int n = scandir(inner, &entries, skip_dots, alphasort);
+	CHECK(n > 0);
+	for (int i = 0; i < n; i++) {
+		char *virtual = join(REG, entries[i]->d_name);
+		slurp(inner, entries[i]->d_name, &data, &size);
+		rpc_store(iface, REG_PARENT "fstempfile", data, size);
+		CHECK(rpc_rename(iface, REG_PARENT "fstempfile", virtual) == AEE_SUCCESS);
+		renames++;
+		free(data); free(virtual);
+	}
+	slurp(stock, "parsed_file_list.csv", &data, &size);
+	rpc_store(iface, REG_PARENT "fstempfile", data, size);
+	CHECK(rpc_rename(iface, REG_PARENT "fstempfile", REG_PARENT "parsed_file_list.csv") == AEE_SUCCESS);
+	renames++;
+	free(data);
+	slurp(stock, "sns_reg_version", &data, &size);
+	rpc_store(iface, REG_PARENT "sns_reg_version", data, size);
+	free(data);
+	/* End state: byte-identical to the stock tree, nothing more, no fstempfile. */
+	CHECK(!host_exists(scratch, "fstempfile"));
+	for (int i = 0; i < n; i++) {
+		char *virtual = join(REG, entries[i]->d_name), *expected, *actual, *physical = join(inner, entries[i]->d_name);
+		size_t expected_size, actual_size;
+		slurp(inner, entries[i]->d_name, &expected, &expected_size);
+		slurp(scratch_inner, entries[i]->d_name, &actual, &actual_size);
+		CHECK(expected_size == actual_size && !memcmp(expected, actual, actual_size));
+		compare_file(iface, virtual, physical);
+		free(expected); free(actual); free(virtual); free(physical); free(entries[i]);
+	}
+	free(entries);
+	for (const char *const *f = (const char *const[]){ "parsed_file_list.csv", "sns_reg_version", NULL }; *f; f++) {
+		char *expected, *actual;
+		size_t expected_size, actual_size;
+		slurp(stock, *f, &expected, &expected_size);
+		slurp(scratch, *f, &actual, &actual_size);
+		CHECK(expected_size == actual_size && !memcmp(expected, actual, actual_size));
+		free(expected); free(actual);
+	}
+	CHECK(scandir(scratch_inner, &entries, skip_dots, alphasort) == n);
+	for (int i = 0; i < n; i++)
+		free(entries[i]);
+	free(entries);
+	CHECK(scandir(scratch, &entries, skip_dots, alphasort) == 3); /* registry, two files */
+	for (int i = 0; i < 3; i++)
+		free(entries[i]);
+	free(entries);
+	free(inner); free(scratch_inner);
+	return renames;
+}
+
 static void parent_writes(struct fastrpc_interface *iface, const char *scratch)
 {
 	const char *names[] = { "sns_reg_version", "fstempfile", "parsed_file_list.csv" };
@@ -208,7 +399,7 @@ int main(int argc, char **argv)
 		puts("REGISTRY_PARENT_IO_PASS");
 		return 0;
 	}
-	if (argc == 4) {
+	if (argc == 4 || (argc == 5 && strcmp(argv[4], "--parents-only"))) {
 		/* Real stock byte-mapping replay: scratch must be a disposable copy. */
 		char *line = NULL;
 		size_t len = 0, count = 0;
@@ -226,8 +417,10 @@ int main(int argc, char **argv)
 		CHECK(!rpc_write(iface, fd, "DIR", 3, 3, &written) && written == 3);
 		rpc_close(iface, fd); compare_text(argv[2], "registry/DIR", "DIR");
 		parent_writes(iface, argv[2]);
+		size_t renamed = argc == 5 ? replay_stock_registry(iface, argv[2], argv[4]) : 0;
 		fastrpc_apps_std_deinit(iface);
-		printf("REGISTRY_STOCK_REPLAY_PASS files=%zu actual_DIR_write=3 parents=3 fstempfile_reopens=108\n", count);
+		printf("REGISTRY_STOCK_REPLAY_PASS files=%zu actual_DIR_write=3 parents=3 fstempfile_reopens=108 "
+		       "stock_registry_frename=%zu\n", count, renamed);
 		return 0;
 	}
 	CHECK(argc == 1);
@@ -246,11 +439,17 @@ int main(int argc, char **argv)
 	path = join(root, "sensors/odm/config/piano.json"); compare_file(iface, "/odm/etc/sensors/config/piano.json", path); free(path);
 	path = join(root, "sensors/config/piano.json"); compare_file(iface, "/vendor/etc/sensors/config/piano.json", path); free(path);
 	path = join(scratch, "registry"); mutations(iface, root, path); free(path);
+	renames(iface, root, scratch);
 	parent_writes(iface, scratch);
 	fastrpc_apps_std_deinit(iface);
 	iface = fastrpc_apps_std_init(construct_root_dir(root, "adsp", NULL)); CHECK(iface);
 	CHECK(rpc_open(iface, REG "DIR", "w") < 0);
 	CHECK(rpc_open(iface, REG_PARENT "sns_reg_version", "w") < 0);
+	/* Without -w the registry mapping is read-only for frename too. */
+	host_write(root, "sensors/registry/registry/group", "read-only");
+	CHECK(rpc_rename(iface, REG "group", REG "moved") == AEE_EFAILED);
+	compare_text(root, "sensors/registry/registry/group", "read-only");
+	CHECK(!host_exists(root, "sensors/registry/registry/moved"));
 	fastrpc_apps_std_deinit(iface);
 	/* Keep the synthetic fixture path in the log for sanitizer/failure inspection. */
 	printf("REGISTRY_IO_PASS fixture=%s\n", root);

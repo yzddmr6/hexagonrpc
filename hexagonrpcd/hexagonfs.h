@@ -40,6 +40,8 @@ struct hexagonfs_file_ops {
 		      int flags,
 		      struct hexagonfs_fd **out);
 	int (*removeat)(struct hexagonfs_fd *dir, const char *name);
+	int (*renameat)(struct hexagonfs_fd *olddir, const char *oldname,
+			struct hexagonfs_fd *newdir, const char *newname);
 	ssize_t (*write)(struct hexagonfs_fd *fd, size_t size, const void *ptr);
 	int (*readdir)(struct hexagonfs_fd *fd, size_t size, char *out);
 	ssize_t (*read)(struct hexagonfs_fd *fd, size_t size, void *ptr);
@@ -77,6 +79,8 @@ int hexagonfs_open_root(struct hexagonfs_fd **fds, struct hexagonfs_dirent *root
 int hexagonfs_openat(struct hexagonfs_fd **fds, int rootfd, int dirfd, const char *name);
 int hexagonfs_openat_flags(struct hexagonfs_fd **fds, int rootfd, int dirfd, const char *name, int flags);
 int hexagonfs_removeat(struct hexagonfs_fd **fds, int rootfd, int dirfd, const char *name);
+int hexagonfs_renameat(struct hexagonfs_fd **fds, int rootfd, int dirfd,
+		       const char *oldname, const char *newname);
 ssize_t hexagonfs_write(struct hexagonfs_fd **fds, int fileno, size_t size, const void *ptr);
 int hexagonfs_close(struct hexagonfs_fd **fds, int fileno);
 
