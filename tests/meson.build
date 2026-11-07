@@ -34,3 +34,19 @@ test_hexagonrpc = executable('test_hexagonrpc',
 test('iobuffer', test_iobuffer)
 test('hexagonfs', test_hexagonfs, args : [sample_file])
 test('hexagonrpc', test_hexagonrpc)
+
+# Substitute allocation and ioctl calls to exercise errors without a device.
+test_type_sequence = executable('test_type_sequence',
+  'test_type_sequence.c',
+  '../libhexagonrpc/hexagonrpc.c',
+  c_args : cflags,
+  include_directories : include,
+  link_args : ['-Wl,--wrap=malloc', '-Wl,--wrap=calloc'],
+)
+foreach scenario : [
+  'input-first', 'input-after-other', 'input-two', 'input-empty',
+  'output-plain', 'output-nested', 'output-two', 'output-empty',
+  'in-out', 'ioctl-failure', 'allocation-failure',
+]
+  test('type-sequence-' + scenario, test_type_sequence, args : [scenario])
+endforeach

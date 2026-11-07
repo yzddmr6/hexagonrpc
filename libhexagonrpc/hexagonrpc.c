@@ -101,10 +101,10 @@ static int emit_inner_type_in(const struct hrpc_inner_type_def_interp4 *type,
 				*inst = (char *) *inst + size;
 				break;
 			case HRPC_ARG_BLOB_SEQ:
-				arg32 = *(const uint32_t *) *inst;
-				*inst = (uint32_t *) *inst + 1;
-				ptr = *(void **) *inst;
-				*inst = (void **) *inst + 1;
+				memcpy(&arg32, *inst, sizeof(arg32));
+				*inst = (char *) *inst + sizeof(arg32);
+				memcpy(&ptr, *inst, sizeof(ptr));
+				*inst = (char *) *inst + sizeof(ptr);
 
 				size = (size_t) type->p[i].d * arg32;
 
@@ -139,10 +139,10 @@ static int emit_inner_type_out(const struct hrpc_inner_type_def_interp4 *type,
 				*inst = (char *) *inst + size;
 				break;
 			case HRPC_ARG_BLOB_SEQ:
-				arg32 = *(const uint32_t *) *inst;
-				*inst = (uint32_t *) *inst + 1;
-				ptr = *(void **) *inst;
-				*inst = (void **) *inst + 1;
+				memcpy(&arg32, *inst, sizeof(arg32));
+				*inst = (char *) *inst + sizeof(arg32);
+				memcpy(&ptr, *inst, sizeof(ptr));
+				*inst = (char *) *inst + sizeof(ptr);
 
 				size = (size_t) type->p[i].d * arg32;
 
@@ -213,6 +213,7 @@ static int emit_args(const struct hrpc_method_def_interp4 *def,
 			case HRPC_ARG_TYPE_SEQ:
 				arg32 = va_arg(list, uint32_t);
 				iptr = va_arg(list, const void *);
+				inner_type = &def->inner_types[def->args[i].d];
 
 				ops->emit_prim_in(sizeof(arg32), &arg32, data);
 				ret = ops->emit_type_seq_in(def, inner_type,
@@ -244,6 +245,7 @@ static int emit_args(const struct hrpc_method_def_interp4 *def,
 			case HRPC_ARG_OUT_TYPE_SEQ:
 				arg32 = va_arg(list, uint32_t);
 				optr = va_arg(list, void *);
+				inner_type = &def->inner_types[def->args[i].d];
 
 				ops->emit_prim_in(sizeof(arg32), &arg32, data);
 				ret = ops->emit_type_seq_out(def, inner_type,
@@ -295,11 +297,11 @@ static int count_type_seq_in(const struct hrpc_method_def_interp4 *def,
 	struct buf_count *count = data;
 	int ret = 0;
 
+	count->n_inbufs++;
 	if (n_inst) {
 		ret = emit_inner_type_in(type,
 					 &count_ops, &inner_count,
 					 &inst);
-		count->n_inbufs++;
 		count->n_inbufs += inner_count.n_inbufs * n_inst;
 	}
 
@@ -314,11 +316,12 @@ static int count_type_seq_out(const struct hrpc_method_def_interp4 *def,
 	struct buf_count *count = data;
 	int ret = 0;
 
+	count->n_inbufs++;
+	count->n_outbufs++;
 	if (n_inst) {
 		ret = emit_inner_type_out(type,
 					  &count_ops, &inner_count,
 					  &inst);
-		count->n_inbufs++;
 		count->n_outbufs += inner_count.n_outbufs * n_inst;
 	}
 
@@ -370,9 +373,11 @@ static int alloc_type_seq_in(const struct hrpc_method_def_interp4 *def,
 			return ret;
 
 		curr->inbuf->length = inner_count.n_prim_in * n_inst;
-		curr->inbuf->ptr = (__u64) malloc(curr->inbuf->length);
-		if (curr->inbuf->ptr == 0)
-			return -1;
+		if (curr->inbuf->length) {
+			curr->inbuf->ptr = (__u64) malloc(curr->inbuf->length);
+			if (curr->inbuf->ptr == 0)
+				return -1;
+		}
 	}
 
 	curr->inbuf++;
@@ -392,25 +397,30 @@ static int alloc_type_seq_out(const struct hrpc_method_def_interp4 *def,
 {
 	struct buf_count inner_count = { 0, 0, 0, 0 };
 	struct curr_buf *curr = data;
+	void *inst2 = inst;
 	int ret = 0;
 	size_t i;
 
 	if (n_inst) {
 		ret = emit_inner_type_out(type,
 					  &count_ops, &inner_count,
-					  &inst);
+					  &inst2);
 		if (ret)
 			return ret;
 
 		curr->inbuf->length = inner_count.n_prim_in * n_inst;
-		curr->inbuf->ptr = (__u64) malloc(curr->inbuf->length);
-		if (curr->inbuf->ptr == 0)
-			return -1;
+		if (curr->inbuf->length) {
+			curr->inbuf->ptr = (__u64) malloc(curr->inbuf->length);
+			if (curr->inbuf->ptr == 0)
+				return -1;
+		}
 
 		curr->outbuf->length = inner_count.n_prim_out * n_inst;
-		curr->outbuf->ptr = (__u64) malloc(curr->outbuf->length);
-		if (curr->outbuf->ptr == 0)
-			return -1;
+		if (curr->outbuf->length) {
+			curr->outbuf->ptr = (__u64) malloc(curr->outbuf->length);
+			if (curr->outbuf->ptr == 0)
+				return -1;
+		}
 	}
 
 	curr->inbuf++;
@@ -456,7 +466,7 @@ static int encode_type_seq_in(const struct hrpc_method_def_interp4 *def,
 	int ret;
 	size_t i;
 
-	inner_pos.buf = pos->buf;
+	inner_pos.buf = pos->buf + 1;
 	inner_pos.prim = (void *) pos->buf->ptr;
 
 	for (i = 0; i < n_inst; i++) {
@@ -478,7 +488,7 @@ static int encode_type_seq_out(const struct hrpc_method_def_interp4 *def,
 	int ret;
 	size_t i;
 
-	inner_pos.buf = pos->buf;
+	inner_pos.buf = pos->buf + 1;
 	inner_pos.prim = (void *) pos->buf->ptr;
 
 	for (i = 0; i < n_inst; i++) {
@@ -529,7 +539,7 @@ static int decode_type_seq_out(const struct hrpc_method_def_interp4 *def,
 	int ret;
 	size_t i;
 
-	inner_pos.buf = pos->buf;
+	inner_pos.buf = pos->buf + 1;
 	inner_pos.prim = (void *) pos->buf->ptr;
 
 	for (i = 0; i < n_inst; i++) {
@@ -653,7 +663,7 @@ static struct fastrpc_invoke_args *alloc_args(const struct hrpc_method_def_inter
 	int ret = -1;
 	va_list peek;
 
-	args = malloc(sizeof(*args) * (count->n_inbufs + count->n_outbufs));
+	args = calloc(count->n_inbufs + count->n_outbufs, sizeof(*args));
 	if (args == NULL)
 		return NULL;
 
