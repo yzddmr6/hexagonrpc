@@ -75,6 +75,30 @@ const struct hrpc_method_def_interp4 apps_std_fread_def = {
 	.inner_types = NULL,
 };
 
+/* Standard apps_std method 5: file, input byte sequence, count, EOF. */
+static struct hrpc_arg_def_interp4 apps_std_fwrite_args[] = {
+	{ HRPC_ARG_WORD, sizeof(uint32_t) },
+	{ HRPC_ARG_BLOB_SEQ, sizeof(char) },
+	{ HRPC_ARG_OUT_BLOB, sizeof(uint32_t) },
+	{ HRPC_ARG_OUT_BLOB, sizeof(uint32_t) },
+};
+
+const struct hrpc_method_def_interp4 apps_std_fwrite_def = {
+	.msg_id = 5,
+	.n_args = HRPC_ARRAY_SIZE(apps_std_fwrite_args),
+	.args = apps_std_fwrite_args,
+};
+
+static struct hrpc_arg_def_interp4 apps_std_fremove_args[] = {
+	{ HRPC_ARG_BLOB_SEQ, sizeof(char) },
+};
+
+const struct hrpc_method_def_interp4 apps_std_fremove_def = {
+	.msg_id = 24,
+	.n_args = HRPC_ARRAY_SIZE(apps_std_fremove_args),
+	.args = apps_std_fremove_args,
+};
+
 static struct hrpc_arg_def_interp4 apps_std_fseek_args[] = {
 	{ HRPC_ARG_WORD, sizeof(uint32_t) },
 	{ HRPC_ARG_WORD, sizeof(uint32_t) },

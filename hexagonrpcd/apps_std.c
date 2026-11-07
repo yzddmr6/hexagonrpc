@@ -20,6 +20,7 @@
  */
 
 #include <errno.h>
+#include <fcntl.h>
 #include <libhexagonrpc/error.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -120,6 +121,52 @@ static uint32_t apps_std_fread(void *data,
 	return 0;
 }
 
+static uint32_t apps_std_fwrite(void *data,
+			       const struct fastrpc_io_buffer *inbufs,
+			       struct fastrpc_io_buffer *outbufs)
+{
+	struct apps_std_ctx *ctx = data;
+	uint32_t fd, count, result[2] = { 0, 0 };
+	ssize_t ret;
+	if (inbufs[0].s < 8 || outbufs[0].s < sizeof(result))
+		return AEE_EBADPARM;
+	memcpy(&fd, inbufs[0].p, 4);
+	memcpy(&count, (const char *)inbufs[0].p + 4, 4);
+	memcpy(outbufs[0].p, result, sizeof(result));
+	if (count > inbufs[1].s)
+		return AEE_EBADPARM;
+	ret = hexagonfs_write(ctx->fds, fd, count, inbufs[1].p);
+#ifdef HEXAGONRPC_VERBOSE
+	printf("write(%u, %u) -> %zd\n", fd, count, ret);
+#endif
+	if (ret < 0) {
+		fprintf(stderr, "Could not write fd %u: %s\n", fd, strerror(-ret));
+		return AEE_EFAILED;
+	}
+	result[0] = ret;
+	memcpy(outbufs[0].p, result, sizeof(result));
+	return AEE_SUCCESS;
+}
+
+static int parse_mode(const char *mode)
+{
+	/* Accept standard C fopen modes, including update and binary spelling. */
+	const char *tail = mode + 1;
+	int flags;
+	if (!*mode)
+		return -EINVAL;
+	if (strcmp(tail, "") && strcmp(tail, "b") && strcmp(tail, "+") &&
+	    strcmp(tail, "+b") && strcmp(tail, "b+"))
+		return -EINVAL;
+	flags = strchr(tail, '+') ? O_RDWR : (*mode == 'r' ? O_RDONLY : O_WRONLY);
+	switch (*mode) {
+	case 'r': return flags;
+	case 'w': return flags | O_CREAT | O_TRUNC;
+	case 'a': return flags | O_CREAT | O_APPEND;
+	default: return -EINVAL;
+	}
+}
+
 static uint32_t apps_std_fseek(void *data,
 			       const struct fastrpc_io_buffer *inbufs,
 			       struct fastrpc_io_buffer *outbufs)
@@ -156,21 +203,21 @@ static uint32_t apps_std_fopen_with_env(void *data,
 {
 	struct apps_std_ctx *ctx = data;
 	uint32_t *out = outbufs[0].p;
-	char rw_mode;
-	int dirfd, fd;
+	const char *rw_mode;
+	int dirfd, fd, flags;
 
 	// The name and environment variable must also be NULL-terminated
+	if (!inbufs[1].s || !inbufs[3].s || !inbufs[4].s || outbufs[0].s < sizeof(*out))
+		return AEE_EBADPARM;
 	if (((const char *) inbufs[1].p)[inbufs[1].s - 1] != 0
 	 || ((const char *) inbufs[3].p)[inbufs[3].s - 1] != 0
 	 || ((const char *) inbufs[4].p)[inbufs[4].s - 1] != 0)
 		return AEE_EBADPARM;
 
-	rw_mode = ((const char *) inbufs[4].p)[0];
-	if (rw_mode == 'w' || rw_mode == 'a') {
-		fprintf(stderr, "Tried to open %s for writing\n",
-				(const char *) inbufs[3].p);
-		return AEE_EUNSUPPORTED;
-	}
+	rw_mode = inbufs[4].p;
+	flags = parse_mode(rw_mode);
+	if (flags < 0)
+		return AEE_EBADPARM;
 
 	if (!strcmp(inbufs[1].p, "ADSP_LIBRARY_PATH")) {
 		dirfd = ctx->adsp_library_dirfd;
@@ -188,16 +235,16 @@ static uint32_t apps_std_fopen_with_env(void *data,
 		return AEE_EFAILED;
 	}
 
-	fd = hexagonfs_openat(ctx->fds, ctx->rootfd, dirfd, inbufs[3].p);
+	fd = hexagonfs_openat_flags(ctx->fds, ctx->rootfd, dirfd, inbufs[3].p, flags);
 	if (fd < 0) {
 		fprintf(stderr, "Could not open %s: %s\n",
 				(const char *) inbufs[3].p,
-				strerror(errno));
+				strerror(-fd));
 		return AEE_EFAILED;
 	}
 
 #ifdef HEXAGONRPC_VERBOSE
-	printf("openat($%s, %s, %c) -> %d\n", (const char *) inbufs[1].p,
+	printf("openat($%s, %s, %s) -> %d\n", (const char *) inbufs[1].p,
 					      (const char *) inbufs[3].p,
 					      rw_mode,
 					      fd);
@@ -206,6 +253,22 @@ static uint32_t apps_std_fopen_with_env(void *data,
 	*out = fd;
 
 	return 0;
+}
+
+static uint32_t apps_std_fremove(void *data,
+				const struct fastrpc_io_buffer *inbufs,
+				struct fastrpc_io_buffer *outbufs)
+{
+	struct apps_std_ctx *ctx = data;
+	int ret;
+	(void)outbufs;
+	if (!inbufs[1].s || ((const char *)inbufs[1].p)[inbufs[1].s - 1])
+		return AEE_EBADPARM;
+	ret = hexagonfs_removeat(ctx->fds, ctx->rootfd, ctx->adsp_library_dirfd, inbufs[1].p);
+#ifdef HEXAGONRPC_VERBOSE
+	printf("remove(%s) -> %d\n", (const char *)inbufs[1].p, ret);
+#endif
+	return ret < 0 ? AEE_EFAILED : AEE_SUCCESS;
 }
 
 static uint32_t apps_std_opendir(void *data,
@@ -396,7 +459,7 @@ void fastrpc_apps_std_deinit(struct fastrpc_interface *iface)
 	struct apps_std_ctx *ctx = iface->data;
 	int i;
 
-	for (i = 0; i < HEXAGONFS_MAX_FD; i++) {
+	for (i = HEXAGONFS_MAX_FD - 1; i >= 0; i--) {
 		if (ctx->fds[i] != NULL)
 			hexagonfs_close(ctx->fds, i);
 	}
@@ -420,7 +483,7 @@ static const struct fastrpc_function_impl apps_std_procs[] = {
 		.def = &apps_std_fread_def,
 		.impl = apps_std_fread,
 	},
-	{ .def = NULL, .impl = NULL, },
+	{ .def = &apps_std_fwrite_def, .impl = apps_std_fwrite, },
 	{ .def = NULL, .impl = NULL, },
 	{ .def = NULL, .impl = NULL, },
 	{ .def = NULL, .impl = NULL, },
@@ -445,7 +508,7 @@ static const struct fastrpc_function_impl apps_std_procs[] = {
 	{ .def = NULL, .impl = NULL, },
 	{ .def = NULL, .impl = NULL, },
 	{ .def = NULL, .impl = NULL, },
-	{ .def = NULL, .impl = NULL, },
+	{ .def = &apps_std_fremove_def, .impl = apps_std_fremove, },
 	{ .def = NULL, .impl = NULL, },
 	{
 		.def = &apps_std_opendir_def,

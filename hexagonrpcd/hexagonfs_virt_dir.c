@@ -20,6 +20,7 @@
  */
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -63,12 +64,16 @@ static int virt_dir_from_dirent(const void *dirent_data, bool dir, void **fd_dat
 static int virt_dir_openat(struct hexagonfs_fd *dir,
 			   const char *segment,
 			   bool expect_dir,
+			   int flags,
 			   struct hexagonfs_fd **out)
 {
 	const struct hexagonfs_dirent *const **dirlist = dir->data;
 	const struct hexagonfs_dirent *ent;
 	struct hexagonfs_fd *fd;
 	int ret;
+	/* Only descendants of the explicitly writable mapped directory may mutate. */
+	if (flags != O_RDONLY)
+		return -EROFS;
 
 	ent = walk_dir(*dirlist, segment);
 	if (ent == NULL)

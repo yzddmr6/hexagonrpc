@@ -68,6 +68,7 @@ static int plat_subtype_name_from_dirent(const void *dirent_data,
 static int plat_subtype_name_openat(struct hexagonfs_fd *dir,
 			const char *segment,
 			bool expect_dir,
+			int flags,
 			struct hexagonfs_fd **out)
 {
 	return -ENOTDIR;

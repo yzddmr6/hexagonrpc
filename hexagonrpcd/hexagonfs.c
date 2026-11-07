@@ -20,6 +20,7 @@
  */
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -139,7 +140,7 @@ err:
 	return ret;
 }
 
-int hexagonfs_openat(struct hexagonfs_fd **fds, int rootfd, int dirfd, const char *name)
+int hexagonfs_openat_flags(struct hexagonfs_fd **fds, int rootfd, int dirfd, const char *name, int flags)
 {
 	struct hexagonfs_fd *fd;
 	const char *curr = name;
@@ -155,6 +156,8 @@ int hexagonfs_openat(struct hexagonfs_fd **fds, int rootfd, int dirfd, const cha
 			curr++;
 	}
 
+	if (selected < 0 || selected >= HEXAGONFS_MAX_FD || !fds[selected])
+		return -EBADF;
 	fd = fds[selected];
 
 	while (*curr != '\0' && !ret) {
@@ -165,11 +168,20 @@ int hexagonfs_openat(struct hexagonfs_fd **fds, int rootfd, int dirfd, const cha
 		}
 
 		if (!strcmp(segment, ".")) {
+			if (flags != O_RDONLY && !*curr) {
+				ret = -EISDIR;
+				goto next;
+			}
 			goto next;
 		} else if (!strcmp(segment, "..")) {
+			if (flags != O_RDONLY && !*curr) {
+				ret = -EISDIR;
+				goto next;
+			}
 			fd = pop_dir(fd, fds[rootfd]);
 		} else {
-			ret = fd->ops->openat(fd, segment, expect_dir, &fd);
+			ret = fd->ops->openat(fd, segment, expect_dir,
+					      *curr ? O_RDONLY : flags, &fd);
 		}
 
 	next:
@@ -179,8 +191,11 @@ int hexagonfs_openat(struct hexagonfs_fd **fds, int rootfd, int dirfd, const cha
 	if (ret)
 		goto err;
 
+	/* Do not alias an already-owned descriptor for empty paths or root/.. . */
+	if (fd->is_assigned)
+		return -EINVAL;
 	ret = allocate_file_number(fds, fd);
-	if (ret)
+	if (ret < 0)
 		goto err;
 
 	return ret;
@@ -188,6 +203,49 @@ int hexagonfs_openat(struct hexagonfs_fd **fds, int rootfd, int dirfd, const cha
 err:
 	destroy_file_descriptor(fd);
 
+	return ret;
+}
+
+int hexagonfs_openat(struct hexagonfs_fd **fds, int rootfd, int dirfd, const char *name)
+{
+	return hexagonfs_openat_flags(fds, rootfd, dirfd, name, O_RDONLY);
+}
+
+ssize_t hexagonfs_write(struct hexagonfs_fd **fds, int fileno, size_t size, const void *ptr)
+{
+	if (fileno < 0 || fileno >= HEXAGONFS_MAX_FD || !fds[fileno])
+		return -EBADF;
+	if (!fds[fileno]->ops->write)
+		return -EROFS;
+	return fds[fileno]->ops->write(fds[fileno], size, ptr);
+}
+
+int hexagonfs_removeat(struct hexagonfs_fd **fds, int rootfd, int dirfd, const char *name)
+{
+	char *path = strdup(name), *leaf;
+	int parent, ret;
+	struct hexagonfs_fd *dir;
+	if (!path)
+		return -ENOMEM;
+	leaf = strrchr(path, '/');
+	if (leaf) {
+		*leaf++ = '\0';
+		parent = hexagonfs_openat(fds, rootfd, dirfd, *path ? path : "/");
+	} else {
+		leaf = path;
+		parent = dirfd;
+	}
+	if (!*leaf || !strcmp(leaf, ".") || !strcmp(leaf, ".."))
+		ret = -EINVAL;
+	else if (parent < 0 || parent >= HEXAGONFS_MAX_FD || !fds[parent])
+		ret = parent < 0 ? parent : -EBADF;
+	else {
+		dir = fds[parent];
+		ret = dir->ops->removeat ? dir->ops->removeat(dir, leaf) : -EROFS;
+	}
+	if (leaf != path && parent >= 0 && parent != dirfd && parent != rootfd)
+		hexagonfs_close(fds, parent);
+	free(path);
 	return ret;
 }
 

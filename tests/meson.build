@@ -35,6 +35,19 @@ test('iobuffer', test_iobuffer)
 test('hexagonfs', test_hexagonfs, args : [sample_file])
 test('hexagonrpc', test_hexagonrpc)
 
+test_registry_io = executable('test_registry_io',
+  'test_registry_io.c',
+  '../hexagonrpcd/apps_std.c',
+  '../hexagonrpcd/interface/apps_std.c',
+  '../hexagonrpcd/hexagonfs.c',
+  '../hexagonrpcd/hexagonfs_mapped.c',
+  '../hexagonrpcd/hexagonfs_virt_dir.c',
+  '../hexagonrpcd/rpcd_builder.c',
+  c_args : cflags,
+  include_directories : include,
+)
+test('registry-io', test_registry_io)
+
 # Substitute allocation and ioctl calls to exercise errors without a device.
 test_type_sequence = executable('test_type_sequence',
   'test_type_sequence.c',

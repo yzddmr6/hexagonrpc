@@ -37,7 +37,10 @@ struct hexagonfs_file_ops {
 	int (*openat)(struct hexagonfs_fd *dir,
 		      const char *segment,
 		      bool expect_dir,
+		      int flags,
 		      struct hexagonfs_fd **out);
+	int (*removeat)(struct hexagonfs_fd *dir, const char *name);
+	ssize_t (*write)(struct hexagonfs_fd *fd, size_t size, const void *ptr);
 	int (*readdir)(struct hexagonfs_fd *fd, size_t size, char *out);
 	ssize_t (*read)(struct hexagonfs_fd *fd, size_t size, void *ptr);
 	int (*stat)(struct hexagonfs_fd *fd, struct stat *stats);
@@ -64,6 +67,7 @@ struct hexagonfs_fd {
 };
 
 extern struct hexagonfs_file_ops hexagonfs_mapped_ops;
+extern struct hexagonfs_file_ops hexagonfs_registry_ops;
 extern struct hexagonfs_file_ops hexagonfs_mapped_or_empty_ops;
 extern struct hexagonfs_file_ops hexagonfs_mapped_sysfs_ops;
 extern struct hexagonfs_file_ops hexagonfs_plat_subtype_name_ops;
@@ -71,6 +75,9 @@ extern struct hexagonfs_file_ops hexagonfs_virt_dir_ops;
 
 int hexagonfs_open_root(struct hexagonfs_fd **fds, struct hexagonfs_dirent *root);
 int hexagonfs_openat(struct hexagonfs_fd **fds, int rootfd, int dirfd, const char *name);
+int hexagonfs_openat_flags(struct hexagonfs_fd **fds, int rootfd, int dirfd, const char *name, int flags);
+int hexagonfs_removeat(struct hexagonfs_fd **fds, int rootfd, int dirfd, const char *name);
+ssize_t hexagonfs_write(struct hexagonfs_fd **fds, int fileno, size_t size, const void *ptr);
 int hexagonfs_close(struct hexagonfs_fd **fds, int fileno);
 
 int hexagonfs_fstat(struct hexagonfs_fd **fds, int fileno, struct stat *stats);

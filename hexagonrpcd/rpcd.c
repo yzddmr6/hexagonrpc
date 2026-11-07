@@ -77,7 +77,8 @@ static void print_usage(const char *argv0)
 	       "\t-f DEVICE\tFastRPC device node to attach to\n"
 	       "\t-p PROGRAM\tRun client program with shared file descriptor\n"
 	       "\t-R DIR\t\tRoot directory of served files (default: /usr/share/qcom/)\n"
-	       "\t-s\t\tAttach to sensorspd\n");
+	       "\t-s\t\tAttach to sensorspd\n"
+	       "\t-w DIR\t\tExplicit writable registry copy (default: read-only)\n");
 }
 
 static int create_shell_pd(int fd, const char *create_shell)
@@ -187,7 +188,8 @@ static int start_clients(size_t n_progs, const char **progs, pid_t *pids)
 	return 0;
 }
 
-static void *start_reverse_tunnel(int fd, const char *device_dir, const char *dsp)
+static void *start_reverse_tunnel(int fd, const char *device_dir, const char *dsp,
+				 const char *registry_write_dir)
 {
 	struct fastrpc_interface **ifaces;
 	struct hexagonfs_dirent *root_dir;
@@ -198,7 +200,11 @@ static void *start_reverse_tunnel(int fd, const char *device_dir, const char *ds
 	if (ifaces == NULL)
 		return NULL;
 
-	root_dir = construct_root_dir(device_dir, dsp);
+	root_dir = construct_root_dir(device_dir, dsp, registry_write_dir);
+	if (!root_dir) {
+		free(ifaces);
+		return NULL;
+	}
 
 	/*
 	 * The apps_remotectl interface patiently waits for this function to
@@ -349,6 +355,7 @@ int main(int argc, char* argv[])
 	const char *device_dir = "/usr/share/qcom/";
 	const char *dsp = "";
 	const char *create_shell = NULL;
+	const char *registry_write_dir = NULL;
 	const char *guessed_device_dir;
 	const char **progs;
 	pid_t *pids;
@@ -372,7 +379,7 @@ int main(int argc, char* argv[])
 	if (guessed_device_dir != NULL)
 		device_dir = guessed_device_dir;
 
-	while ((opt = getopt(argc, argv, "c:d:f:p:R:s")) != -1) {
+	while ((opt = getopt(argc, argv, "c:d:f:p:R:sw:")) != -1) {
 		switch (opt) {
 			case 'c':
 				create_shell = optarg;
@@ -392,6 +399,9 @@ int main(int argc, char* argv[])
 				break;
 			case 's':
 				attach_sns = true;
+				break;
+			case 'w':
+				registry_write_dir = optarg;
 				break;
 			default:
 				print_usage(argv[0]);
@@ -433,7 +443,7 @@ int main(int argc, char* argv[])
 	if (ret)
 		goto err_close_dev;
 
-	start_reverse_tunnel(fd, device_dir, dsp);
+	start_reverse_tunnel(fd, device_dir, dsp, registry_write_dir);
 
 	terminate_clients(n_progs, pids);
 

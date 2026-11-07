@@ -29,6 +29,8 @@
 #define ACDBDATA		"/acdb/"
 #define DSP_LIBS		"/dsp/"
 #define SENSORS_CONFIG		"/sensors/config/"
+#define SENSORS_ODM		"/sensors/odm/"
+#define SENSORS_VENDOR		"/sensors/vendor/"
 #define SENSORS_REGISTRY	"/sensors/registry/"
 #define SNS_REG_CONFIG		"/sensors/sns_reg.conf"
 #define SYSFS_SOCINFO		"/socinfo/"
@@ -104,16 +106,29 @@ static struct hexagonfs_dirent *hfs_map_or_empty(const char *name, const char *p
 	return file;
 }
 
+static struct hexagonfs_dirent *hfs_map_child(const char *name, const char *parent)
+{
+	char *path = malloc(strlen(parent) + strlen(name) + 1);
+	if (!path)
+		return NULL;
+	strcpy(path, parent);
+	strcat(path, name);
+	return hfs_map_or_empty(name, path);
+}
+
 /*
  * Construct the root directory
  *
  * TODO: Make this free()-able with reference counts
  */
-struct hexagonfs_dirent *construct_root_dir(const char *prefix, const char *dsp)
+struct hexagonfs_dirent *construct_root_dir(const char *prefix, const char *dsp,
+					 const char *registry_write_dir)
 {
 	char *acdbdata, *dsp_libs, *sns_cfg, *sns_reg, *sns_reg_config, *socinfo;
+	char *sns_odm, *sns_vendor;
 	size_t n_prefix;
 	struct hexagonfs_dirent *persist_dir, *vendor_dir;
+	struct hexagonfs_dirent *registry;
 
 	n_prefix = strlen(prefix);
 
@@ -122,6 +137,14 @@ struct hexagonfs_dirent *construct_root_dir(const char *prefix, const char *dsp)
 	sns_reg = malloc(n_prefix + strlen(SENSORS_REGISTRY) + 1);
 	sns_reg_config = malloc(n_prefix + strlen(SNS_REG_CONFIG) + 1);
 	socinfo = malloc(n_prefix + strlen(SYSFS_SOCINFO) + 1);
+	sns_odm = malloc(n_prefix + strlen(SENSORS_ODM) + 1);
+	sns_vendor = malloc(n_prefix + strlen(SENSORS_VENDOR) + 1);
+	if (!sns_odm || !sns_vendor)
+		return NULL;
+	strcpy(sns_odm, prefix);
+	strcat(sns_odm, SENSORS_ODM);
+	strcpy(sns_vendor, prefix);
+	strcat(sns_vendor, SENSORS_VENDOR);
 
 	dsp_libs = malloc(n_prefix + strlen(DSP_LIBS) + strlen(dsp) + 1);
 
@@ -160,10 +183,15 @@ struct hexagonfs_dirent *construct_root_dir(const char *prefix, const char *dsp)
 	 * Some platforms need this in / and some need it in /mnt/vendor. Form
 	 * a hard link between both locations.
 	 */
+	registry = hfs_map("registry", registry_write_dir ? registry_write_dir : sns_reg);
+	if (!registry)
+		return NULL;
+	if (registry_write_dir)
+		registry->ops = &hexagonfs_registry_ops;
 	persist_dir = hfs_mkdir("persist", 1,
 				hfs_mkdir("sensors", 1,
 					hfs_mkdir("registry", 1,
-						hfs_map("registry", sns_reg)
+						registry
 					)
 				)
 		      );
@@ -174,15 +202,23 @@ struct hexagonfs_dirent *construct_root_dir(const char *prefix, const char *dsp)
 	 */
 	vendor_dir = hfs_mkdir("vendor", 1,
 				hfs_mkdir("etc", 2,
-					hfs_mkdir("sensors", 2,
+					hfs_mkdir("sensors", 5,
 						hfs_map_or_empty("config", sns_cfg),
-						hfs_map("sns_reg_config", sns_reg_config)
+						hfs_map("sns_reg_config", sns_reg_config),
+						hfs_map_child("sns_odp_config", sns_vendor),
+						hfs_map_child("hals.conf", sns_vendor),
+						hfs_map_child("javalibs", sns_vendor)
 					),
 					hfs_map("acdbdata", acdbdata)
 				)
 			);
 
-	return hfs_mkdir("/", 6,
+	return hfs_mkdir("/", 7,
+			hfs_mkdir("odm", 1,
+				hfs_mkdir("etc", 1,
+					hfs_map_or_empty("sensors", sns_odm)
+				)
+			),
 			hfs_mkdir("mnt", 1,
 				hfs_mkdir("vendor", 1,
 					persist_dir

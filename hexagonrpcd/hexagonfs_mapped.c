@@ -33,6 +33,7 @@
 struct mapped_ctx {
 	int fd;
 	DIR *dir;
+	bool writable;
 };
 
 static void mapped_close(void *fd_data)
@@ -68,6 +69,7 @@ static int mapped_from_dirent(const void *dirent_data, bool dir, void **fd_data)
 	}
 
 	ctx->dir = NULL;
+	ctx->writable = false;
 
 	*fd_data = ctx;
 
@@ -81,13 +83,19 @@ err:
 static int mapped_openat(struct hexagonfs_fd *dir,
 			 const char *segment,
 			 bool expect_dir,
+			 int flags,
 			 struct hexagonfs_fd **out)
 {
 	struct mapped_ctx *dir_ctx = dir->data;
 	struct hexagonfs_fd *fd;
 	struct mapped_ctx *ctx;
-	int flags = O_RDONLY;
+	bool writing = (flags & O_ACCMODE) != O_RDONLY || (flags & (O_CREAT | O_TRUNC));
+	struct stat st;
 	int ret;
+	if (writing && !dir_ctx->writable)
+		return -EROFS;
+	if (writing && expect_dir)
+		return -EISDIR;
 
 	ctx = malloc(sizeof(struct mapped_ctx));
 	if (ctx == NULL)
@@ -102,13 +110,30 @@ static int mapped_openat(struct hexagonfs_fd *dir,
 	if (expect_dir)
 		flags |= O_DIRECTORY;
 
-	ctx->fd = openat(dir_ctx->fd, segment, flags);
+	/* Do not follow links out of the scratch copy. Check hard links and file
+	 * type before truncation so a linked original can never be modified. */
+	ctx->fd = openat(dir_ctx->fd, segment,
+			(flags & ~O_TRUNC) | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600);
 	if (ctx->fd == -1) {
 		ret = -errno;
 		goto err_free_fd;
 	}
+	if (fstat(ctx->fd, &st) < 0) {
+		ret = -errno;
+		goto err_close_fd;
+	}
+	if ((writing && (!S_ISREG(st.st_mode) || st.st_nlink != 1)) ||
+	    (!S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode))) {
+		ret = -EPERM;
+		goto err_close_fd;
+	}
+	if ((flags & O_TRUNC) && ftruncate(ctx->fd, 0) < 0) {
+		ret = -errno;
+		goto err_close_fd;
+	}
 
 	ctx->dir = NULL;
+	ctx->writable = dir_ctx->writable;
 
 	fd->is_assigned = false;
 	fd->up = dir;
@@ -119,11 +144,53 @@ static int mapped_openat(struct hexagonfs_fd *dir,
 
 	return 0;
 
+err_close_fd:
+	close(ctx->fd);
 err_free_fd:
 	free(fd);
 err:
 	free(ctx);
 	return ret;
+}
+
+static int registry_from_dirent(const void *path, bool dir, void **out)
+{
+	struct mapped_ctx *ctx = calloc(1, sizeof(*ctx));
+	(void)dir;
+	if (!ctx)
+		return -ENOMEM;
+	ctx->fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+	if (ctx->fd < 0) {
+		int ret = -errno;
+		free(ctx);
+		return ret;
+	}
+	ctx->writable = true;
+	*out = ctx;
+	return 0;
+}
+
+static ssize_t mapped_write(struct hexagonfs_fd *fd, size_t size, const void *ptr)
+{
+	struct mapped_ctx *ctx = fd->data;
+	ssize_t ret;
+	if (!ctx->writable)
+		return -EROFS;
+	ret = write(ctx->fd, ptr, size);
+	return ret < 0 ? -errno : ret;
+}
+
+static int mapped_removeat(struct hexagonfs_fd *dir, const char *name)
+{
+	struct mapped_ctx *ctx = dir->data;
+	struct stat st;
+	if (!ctx->writable)
+		return -EROFS;
+	if (fstatat(ctx->fd, name, &st, AT_SYMLINK_NOFOLLOW) < 0)
+		return -errno;
+	if (!S_ISREG(st.st_mode) || st.st_nlink != 1)
+		return -EPERM;
+	return unlinkat(ctx->fd, name, 0) < 0 ? -errno : 0;
 }
 
 static ssize_t mapped_read(struct hexagonfs_fd *fd, size_t size, void *out)
@@ -197,7 +264,7 @@ static int mapped_stat(struct hexagonfs_fd *fd, struct stat *stats)
 	stats->st_ino = 0;
 	stats->st_nlink = 0;
 
-	if (phys.st_mode & S_IFDIR) {
+	if (S_ISDIR(phys.st_mode)) {
 		stats->st_mode = S_IFDIR
 			       | S_IRUSR | S_IXUSR
 			       | S_IRGRP | S_IXGRP
@@ -205,6 +272,8 @@ static int mapped_stat(struct hexagonfs_fd *fd, struct stat *stats)
 	} else {
 		stats->st_mode = S_IFREG | S_IRUSR | S_IRGRP | S_IROTH;
 	}
+	if (ctx->writable)
+		stats->st_mode |= S_IWUSR;
 
 	stats->st_atim.tv_sec = phys.st_atim.tv_sec;
 	stats->st_atim.tv_nsec = phys.st_atim.tv_nsec;
@@ -236,10 +305,11 @@ static int mapped_or_empty_from_dirent(const void *dirent_data, bool dir, void *
 static int mapped_or_empty_openat(struct hexagonfs_fd *dir,
 				  const char *segment,
 				  bool expect_dir,
+				  int flags,
 				  struct hexagonfs_fd **out)
 {
 	if (dir->data)
-		return mapped_openat(dir, segment, expect_dir, out);
+		return mapped_openat(dir, segment, expect_dir, flags, out);
 	else
 		return -ENOENT;
 }
@@ -330,6 +400,20 @@ struct hexagonfs_file_ops hexagonfs_mapped_ops = {
 	.readdir = mapped_readdir,
 	.seek = mapped_seek,
 	.stat = mapped_stat,
+	.write = mapped_write,
+	.removeat = mapped_removeat,
+};
+
+struct hexagonfs_file_ops hexagonfs_registry_ops = {
+	.close = mapped_close,
+	.from_dirent = registry_from_dirent,
+	.openat = mapped_openat,
+	.read = mapped_read,
+	.readdir = mapped_readdir,
+	.seek = mapped_seek,
+	.stat = mapped_stat,
+	.write = mapped_write,
+	.removeat = mapped_removeat,
 };
 
 struct hexagonfs_file_ops hexagonfs_mapped_or_empty_ops = {
