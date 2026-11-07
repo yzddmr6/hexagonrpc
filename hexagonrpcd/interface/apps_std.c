@@ -182,3 +182,27 @@ const struct hrpc_method_def_interp4 apps_std_stat_def = {
 	.n_inner_types = 0,
 	.inner_types = NULL,
 };
+
+/*
+ * IDL method 36, reached through the extended method ID (sc method 31):
+ *
+ *   inbuf[0]  = { uint32_t method_id, envvarname_len, delim_len, name_len, mode_len }
+ *   inbuf[1..4] = NUL-terminated envvarname, delim, name, mode
+ *   outbuf[0] = { int32_t fd, int32_t len }
+ */
+static struct hrpc_arg_def_interp4 apps_std_fopen_with_env_fd_args[] = {
+	{ HRPC_ARG_BLOB_SEQ, sizeof(char) },
+	{ HRPC_ARG_BLOB_SEQ, sizeof(char) },
+	{ HRPC_ARG_BLOB_SEQ, sizeof(char) },
+	{ HRPC_ARG_BLOB_SEQ, sizeof(char) },
+	{ HRPC_ARG_OUT_BLOB, sizeof(uint32_t) },
+	{ HRPC_ARG_OUT_BLOB, sizeof(uint32_t) },
+};
+
+const struct hrpc_method_def_interp4 apps_std_fopen_with_env_fd_def = {
+	.msg_id = 36,
+	.n_args = HRPC_ARRAY_SIZE(apps_std_fopen_with_env_fd_args),
+	.args = apps_std_fopen_with_env_fd_args,
+	.n_inner_types = 0,
+	.inner_types = NULL,
+};

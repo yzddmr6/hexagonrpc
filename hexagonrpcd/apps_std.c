@@ -20,6 +20,7 @@
  */
 
 #include <errno.h>
+#include <stdbool.h>
 #include <libhexagonrpc/error.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -150,6 +151,28 @@ static uint32_t apps_std_fseek(void *data,
 	return 0;
 }
 
+/*
+ * Select the directory that stands in for the search path named by an
+ * environment variable. Returns false for an unknown variable.
+ */
+static bool apps_std_search_dirfd(const struct apps_std_ctx *ctx,
+				  const char *envvarname, int *dirfd)
+{
+	if (!strcmp(envvarname, "ADSP_LIBRARY_PATH"))
+		*dirfd = ctx->adsp_library_dirfd;
+	else if (!strcmp(envvarname, "ADSP_AVS_CFG_PATH"))
+		*dirfd = ctx->adsp_avs_cfg_dirfd;
+	else
+		return false;
+
+	return true;
+}
+
+static bool apps_std_is_c_string(const struct fastrpc_io_buffer *buf)
+{
+	return buf->s > 0 && ((const char *) buf->p)[buf->s - 1] == '\0';
+}
+
 static uint32_t apps_std_fopen_with_env(void *data,
 					const struct fastrpc_io_buffer *inbufs,
 					struct fastrpc_io_buffer *outbufs)
@@ -172,11 +195,7 @@ static uint32_t apps_std_fopen_with_env(void *data,
 		return AEE_EUNSUPPORTED;
 	}
 
-	if (!strcmp(inbufs[1].p, "ADSP_LIBRARY_PATH")) {
-		dirfd = ctx->adsp_library_dirfd;
-	} else if (!strcmp(inbufs[1].p, "ADSP_AVS_CFG_PATH")) {
-		dirfd = ctx->adsp_avs_cfg_dirfd;
-	} else {
+	if (!apps_std_search_dirfd(ctx, inbufs[1].p, &dirfd)) {
 		fprintf(stderr, "Unknown search directory %s\n",
 				(const char *) inbufs[1].p);
 		return AEE_EBADPARM;
@@ -351,6 +370,74 @@ static uint32_t apps_std_stat(void *data,
 	return 0;
 }
 
+/*
+ * fopen_with_env_fd (IDL method 36) searches the path in an environment
+ * variable like fopen_with_env, but returns a DMA buffer holding the whole
+ * file instead of a stream: the reference listener reads the file into an
+ * rpcmem buffer, maps that buffer into the DSP process (FASTRPC_MAP_FD) and
+ * returns its file descriptor and length. The DSP probes optional files this
+ * way, and the reference answers an absent file with the host errno ENOENT.
+ *
+ * Mapping buffers into the DSP is not implemented here, so only the lookup is
+ * served: an absent file is reported exactly like the reference does, and a
+ * present file is refused with AEE_EUNSUPPORTED rather than served wrongly.
+ */
+static uint32_t apps_std_fopen_with_env_fd(void *data,
+					   const struct fastrpc_io_buffer *inbufs,
+					   struct fastrpc_io_buffer *outbufs)
+{
+	struct apps_std_ctx *ctx = data;
+	struct {
+		int32_t fd;
+		int32_t len;
+	} *first_out = outbufs[0].p;
+	const char *envvarname = inbufs[1].p;
+	const char *name = inbufs[3].p;
+	const char *mode = inbufs[4].p;
+	int dirfd, fd;
+
+	first_out->fd = -1;
+	first_out->len = 0;
+
+	if (!apps_std_is_c_string(&inbufs[1])
+	 || !apps_std_is_c_string(&inbufs[2])
+	 || !apps_std_is_c_string(&inbufs[3])
+	 || !apps_std_is_c_string(&inbufs[4]))
+		return AEE_EBADPARM;
+
+	if (strpbrk(mode, "wa+") != NULL) {
+		fprintf(stderr, "Tried to open %s for writing\n", name);
+		return AEE_EUNSUPPORTED;
+	}
+
+	if (!apps_std_search_dirfd(ctx, envvarname, &dirfd)) {
+		fprintf(stderr, "Unknown search directory %s\n", envvarname);
+		return AEE_EBADPARM;
+	}
+
+	if (dirfd < 0) {
+		fprintf(stderr, "Could not open %s: search directory $%s is unavailable\n",
+				name, envvarname);
+		return ENOENT;
+	}
+
+	fd = hexagonfs_openat(ctx->fds, ctx->rootfd, dirfd, name);
+	if (fd == -ENOENT) {
+		fprintf(stderr, "Could not open %s: %s\n", name, strerror(-fd));
+		return ENOENT;
+	} else if (fd < 0) {
+		fprintf(stderr, "Could not open %s: %s\n", name, strerror(-fd));
+		return AEE_EFAILED;
+	}
+
+	hexagonfs_close(ctx->fds, fd);
+
+	fprintf(stderr, "Found %s, but serving it as a DSP-mapped buffer is not supported\n",
+			name);
+
+	return AEE_EUNSUPPORTED;
+}
+
 struct fastrpc_interface *fastrpc_apps_std_init(struct hexagonfs_dirent *root)
 {
 	struct fastrpc_interface *iface;
@@ -465,10 +552,20 @@ static const struct fastrpc_function_impl apps_std_procs[] = {
 		.def = &apps_std_stat_def,
 		.impl = apps_std_stat,
 	},
+	{ .def = NULL, .impl = NULL, },
+	{ .def = NULL, .impl = NULL, },
+	{ .def = NULL, .impl = NULL, },
+	{ .def = NULL, .impl = NULL, },
+	{
+		.def = &apps_std_fopen_with_env_fd_def,
+		.expected_sc = APPS_STD_FOPEN_WITH_ENV_FD_SC,
+		.strict_sc = true,
+		.impl = apps_std_fopen_with_env_fd,
+	},
 };
 
 const struct fastrpc_interface apps_std_interface = {
 	.name = "apps_std",
-	.n_procs = 32,
+	.n_procs = HRPC_ARRAY_SIZE(apps_std_procs),
 	.procs = apps_std_procs,
 };

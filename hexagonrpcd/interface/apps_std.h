@@ -35,5 +35,9 @@ extern struct hrpc_method_def_interp4 apps_std_closedir_def;
 extern struct hrpc_method_def_interp4 apps_std_readdir_def;
 extern struct hrpc_method_def_interp4 apps_std_mkdir_def;
 extern struct hrpc_method_def_interp4 apps_std_stat_def;
+extern const struct hrpc_method_def_interp4 apps_std_fopen_with_env_fd_def;
+
+/* Methods above 30 are sent as method 31 with the real ID in inbuf[0]. */
+#define APPS_STD_FOPEN_WITH_ENV_FD_SC REMOTE_SCALARS_MAKE(31, 5, 1)
 
 #endif /* INTERFACE_APPS_STD_H */
