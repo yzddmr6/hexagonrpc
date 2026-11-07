@@ -42,8 +42,20 @@ test_registry_version_contract = executable('test_registry_version_contract',
   include_directories : include,
 )
 
+test_sns_registry = executable('test_sns_registry',
+  'test_sns_registry.c',
+  '../hexagonrpcd/interface/adsp_listener.c',
+  '../hexagonrpcd/interface/sns_registry.c',
+  '../hexagonrpcd/iobuffer.c',
+  '../hexagonrpcd/listener.c',
+  '../hexagonrpcd/sns_registry.c',
+  c_args : cflags,
+  include_directories : include,
+)
+
 test('iobuffer', test_iobuffer)
 test('hexagonfs', test_hexagonfs, args : [sample_file])
 test('hexagonrpc', test_hexagonrpc)
 test('registry-version-contract', test_registry_version_contract,
   args : [meson.current_build_dir()])
+test('sns-registry', test_sns_registry)

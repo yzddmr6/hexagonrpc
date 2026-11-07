@@ -43,6 +43,7 @@
 #include "listener.h"
 #include "localctl.h"
 #include "rpcd_builder.h"
+#include "sns_registry.h"
 
 static int register_fastrpc_listener(int fd)
 {
@@ -187,18 +188,22 @@ static int start_clients(size_t n_progs, const char **progs, pid_t *pids)
 	return 0;
 }
 
-static void *start_reverse_tunnel(int fd, const char *device_dir, const char *dsp)
+static int start_reverse_tunnel(int fd, const char *device_dir, const char *dsp)
 {
 	struct fastrpc_interface **ifaces;
 	struct hexagonfs_dirent *root_dir;
-	size_t n_ifaces = 3;
+	size_t n_ifaces = SNS_REGISTRY + 1;
 	int ret;
 
-	ifaces = malloc(sizeof(struct fastrpc_interface) * n_ifaces);
+	ifaces = calloc(n_ifaces, sizeof(*ifaces));
 	if (ifaces == NULL)
-		return NULL;
+		return AEE_ENOMEMORY;
 
 	root_dir = construct_root_dir(device_dir, dsp);
+	if (root_dir == NULL) {
+		free(ifaces);
+		return AEE_ENOMEMORY;
+	}
 
 	/*
 	 * The apps_remotectl interface patiently waits for this function to
@@ -210,23 +215,24 @@ static void *start_reverse_tunnel(int fd, const char *device_dir, const char *ds
 	// Dynamic interfaces with no hardcoded handle
 	ifaces[1] = fastrpc_apps_std_init(root_dir);
 	ifaces[2] = fastrpc_apps_mem_init(fd);
+	ifaces[SNS_REGISTRY] = (struct fastrpc_interface *) &sns_registry_interface;
+
+	if (ifaces[REMOTECTL] == NULL || ifaces[1] == NULL || ifaces[2] == NULL) {
+		ret = AEE_ENOMEMORY;
+		goto err_deinit;
+	}
 
 	ret = register_fastrpc_listener(fd);
 	if (ret)
-		goto err;
+		goto err_deinit;
 
-	run_fastrpc_listener(fd, n_ifaces, ifaces);
+	ret = run_fastrpc_listener(fd, n_ifaces, ifaces);
 
+err_deinit:
 	fastrpc_localctl_deinit(ifaces[REMOTECTL]);
-
 	free(ifaces);
 
-	return NULL;
-
-err:
-	free(ifaces);
-
-	return NULL;
+	return ret;
 }
 
 static char *read_sysfs_file(const char *path, struct stat *file_stat)
@@ -433,7 +439,9 @@ int main(int argc, char* argv[])
 	if (ret)
 		goto err_close_dev;
 
-	start_reverse_tunnel(fd, device_dir, dsp);
+	ret = start_reverse_tunnel(fd, device_dir, dsp);
+	if (ret)
+		fprintf(stderr, "FastRPC listener exited abnormally: %d\n", ret);
 
 	terminate_clients(n_progs, pids);
 
@@ -441,7 +449,7 @@ int main(int argc, char* argv[])
 	free(pids);
 	free(progs);
 
-	return 0;
+	return ret ? 4 : 0;
 
 err_close_dev:
 	close(fd);

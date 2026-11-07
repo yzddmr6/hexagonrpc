@@ -23,6 +23,7 @@
 #define LISTENER_H
 
 #include <libhexagonrpc/hexagonrpc.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -30,6 +31,8 @@
 
 struct fastrpc_function_impl {
 	const struct hrpc_method_def_interp4 *def;
+	uint32_t expected_sc;
+	bool strict_sc;
 	uint32_t (*impl)(void *data,
 			 const struct fastrpc_io_buffer *inbufs,
 			 struct fastrpc_io_buffer *outbufs);
@@ -46,6 +49,14 @@ extern const struct fastrpc_interface localctl_interface;
 
 extern const struct fastrpc_interface apps_mem_interface;
 extern const struct fastrpc_interface apps_std_interface;
+
+int fastrpc_invoke_requested_procedure(size_t n_ifaces,
+				       struct fastrpc_interface **ifaces,
+				       uint32_t handle,
+				       uint32_t sc,
+				       uint32_t *result,
+				       const struct fastrpc_io_buffer *decoded,
+				       struct fastrpc_io_buffer **returned);
 
 int run_fastrpc_listener(int fd,
 			 size_t n_ifaces,

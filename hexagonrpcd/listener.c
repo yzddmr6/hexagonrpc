@@ -489,13 +489,13 @@ err_free_outbufs:
 	return ret;
 }
 
-static int invoke_requested_procedure(size_t n_ifaces,
-				      struct fastrpc_interface **ifaces,
-				      uint32_t handle,
-				      uint32_t sc,
-			              uint32_t *result,
-				      const struct fastrpc_io_buffer *decoded,
-				      struct fastrpc_io_buffer **returned)
+int fastrpc_invoke_requested_procedure(size_t n_ifaces,
+				       struct fastrpc_interface **ifaces,
+				       uint32_t handle,
+				       uint32_t sc,
+				       uint32_t *result,
+				       const struct fastrpc_io_buffer *decoded,
+				       struct fastrpc_io_buffer **returned)
 {
 	const struct fastrpc_function_impl *impl;
 	uint32_t method = REMOTE_SCALARS_METHOD(sc);
@@ -536,6 +536,13 @@ static int invoke_requested_procedure(size_t n_ifaces,
 	if (impl->def == NULL || impl->impl == NULL) {
 		fprintf(stderr, "Unsupported method: %u (%08x)\n", method, sc);
 		*result = AEE_EUNSUPPORTED;
+		return 1;
+	}
+
+	if (impl->strict_sc && sc != impl->expected_sc) {
+		fprintf(stderr, "Unexpected scalar shape: %08x (expected %08x)\n",
+			sc, impl->expected_sc);
+		*result = AEE_EBADPARM;
 		return 1;
 	}
 
@@ -589,9 +596,9 @@ int run_fastrpc_listener(int fd,
 		if (returned != NULL)
 			iobuf_free(n_outbufs, returned);
 
-		ret = invoke_requested_procedure(n_ifaces, ifaces,
-						 handle, sc, &result,
-						 decoded, &returned);
+		ret = fastrpc_invoke_requested_procedure(n_ifaces, ifaces,
+							 handle, sc, &result,
+							 decoded, &returned);
 		if (ret)
 			break;
 
