@@ -216,7 +216,8 @@ void outbufs_encode(size_t n_outbufs, const struct fastrpc_io_buffer *outbufs,
 	size_t i;
 
 	for (i = 0; i < n_outbufs; i++) {
-		*(uint32_t *) ptr = htole32(outbufs[i].s);
+		uint32_t size = htole32(outbufs[i].s);
+		memcpy(ptr, &size, sizeof(size));
 		ptr = &ptr[4];
 		align = (align + 4) & 0x7;
 

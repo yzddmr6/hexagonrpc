@@ -316,7 +316,7 @@ int ioctl(int fd, ioctl_operation op, ...)
 			if (args[i].length != expected[i].len)
 				return -1;
 
-			if (memcmp((void *) args[i].ptr,
+			if (args[i].length && memcmp((void *) args[i].ptr,
 				   expected[i].ptr,
 				   args[i].length))
 				return -1;
@@ -326,12 +326,13 @@ int ioctl(int fd, ioctl_operation op, ...)
 			if (args[i].fd != -1 || args[i].attr != 0)
 				return -1;
 
-			if (args[i].length < expected[i].len)
+			if (args[i].length != expected[i].len)
 				return -1;
 
-			memcpy((void *) args[i].ptr,
-			       expected[i].ptr,
-			       args[i].length);
+			if (args[i].length)
+				memcpy((void *) args[i].ptr,
+				       expected[i].ptr,
+				       args[i].length);
 		}
 
 		return 0;
