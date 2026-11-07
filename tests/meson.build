@@ -31,6 +31,19 @@ test_hexagonrpc = executable('test_hexagonrpc',
   include_directories : include,
 )
 
+test_registry_version_contract = executable('test_registry_version_contract',
+  'test_registry_version_contract.c',
+  '../hexagonrpcd/rpcd_builder.c',
+  '../hexagonrpcd/hexagonfs.c',
+  '../hexagonrpcd/hexagonfs_mapped.c',
+  '../hexagonrpcd/hexagonfs_plat_subtype_name.c',
+  '../hexagonrpcd/hexagonfs_virt_dir.c',
+  c_args : cflags,
+  include_directories : include,
+)
+
 test('iobuffer', test_iobuffer)
 test('hexagonfs', test_hexagonfs, args : [sample_file])
 test('hexagonrpc', test_hexagonrpc)
+test('registry-version-contract', test_registry_version_contract,
+  args : [meson.current_build_dir()])
